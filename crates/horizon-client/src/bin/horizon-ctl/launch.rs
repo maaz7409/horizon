@@ -181,7 +181,11 @@ pub fn launch(socket: &Path, args: &[String]) -> Result<Value, Value> {
 /// [`launch`] for a caller in `cwd`. A launcher install runs the game in the game home, so a relative
 /// socket would name one file here and another there: the game gets the path made absolute.
 fn launch_from(cwd: &Path, socket: &Path, args: &[String]) -> Result<Value, Value> {
-    let socket = &cwd.join(socket);
+    // A Windows drive-relative `C:ctl.sock` stays relative after the join: `absolute` resolves it against the
+    // ctl's directory on that drive, as the ctl's own opens would.
+    let socket = &std::path::absolute(cwd.join(socket)).map_err(
+        |e| json!({ "error": format!("--socket {}: {e}", socket.display()), "kind": "usage" }),
+    )?;
     let o = parse(args).map_err(|e| json!({ "error": e, "kind": "usage" }))?;
     horizon_client::control::check_path(socket).map_err(
         |e| json!({ "error": format!("--socket {}: {e}", socket.display()), "kind": "usage" }),
