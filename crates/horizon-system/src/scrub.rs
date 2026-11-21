@@ -248,10 +248,13 @@ fn ipv6_at(bytes: &[u8], i: usize) -> Option<(usize, &'static str)> {
     let groups: Vec<&str> = hex.split(':').collect();
     let filled = groups.iter().filter(|g| !g.is_empty()).count() + if quad { 2 } else { 0 };
     let digit = |g: &&str| g.bytes().any(|b| b.is_ascii_digit());
-    let path_like = !quad && filled == 2 && !token.replace("::", "").contains(':');
+    // Every colon in a `::`, as in a code path (`a::b`): only a digit tells an address apart. A single colon
+    // never stands in a path, so an address of letters only (`fdab:cdef::abcd`) is hidden too.
+    let pathish = !token.replace("::", "").contains(':');
+    let path_like = !quad && filled == 2 && pathish;
     let ok = groups.iter().all(|g| g.len() <= 4)
         && (filled == 8 || (token.contains("::") && filled >= 2))
-        && (quad || groups.iter().any(digit))
+        && (quad || !pathish || groups.iter().any(digit))
         && (!path_like
             || groups
                 .iter()
@@ -403,6 +406,10 @@ mod tests {
         assert_eq!(
             s.scrub("net 2a01:4f8:c0c:1::/64 and fd00:1::, 2001:db8::1: refused"),
             "net <ip>/64 and <ip>, <ip>: refused"
+        );
+        assert_eq!(
+            s.scrub("letters only: fdab:cdef::abcd, dead:beef:cafe:face:dead:beef:cafe:face"),
+            "letters only: <ip>, <ip>"
         );
         assert_eq!(s.scrub("mail ana.b+mc@example.org now"), "mail <email> now");
         assert_eq!(
