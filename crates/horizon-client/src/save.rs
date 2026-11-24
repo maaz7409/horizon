@@ -192,6 +192,8 @@ impl Drop for SessionLock {
 /// and unlike a plain `fcntl` lock it belongs to the opened file, not the
 /// process, so a second [`SessionLock::acquire`] or an [`SessionLock::is_locked`]
 /// probe in this process still sees it, and closing the probe doesn't drop it.
+/// The `flock` is taken too, on the same descriptor: a Horizon built before this
+/// takes only that one, and the OFD lock alone would not see it.
 #[cfg(target_os = "linux")]
 fn whole_file_lock(file: &fs::File, kind: nix::libc::c_int) -> nix::Result<()> {
     use nix::fcntl::{FcntlArg, fcntl};
@@ -209,14 +211,19 @@ fn whole_file_lock(file: &fs::File, kind: nix::libc::c_int) -> nix::Result<()> {
 fn try_lock(file: &fs::File) -> std::result::Result<(), fs::TryLockError> {
     use nix::errno::Errno;
     match whole_file_lock(file, nix::libc::F_WRLCK) {
-        Ok(()) => Ok(()),
-        Err(Errno::EAGAIN | Errno::EACCES) => Err(fs::TryLockError::WouldBlock),
-        Err(e) => Err(fs::TryLockError::Error(e.into())),
+        Ok(()) => {}
+        Err(Errno::EAGAIN | Errno::EACCES) => return Err(fs::TryLockError::WouldBlock),
+        Err(e) => return Err(fs::TryLockError::Error(e.into())),
     }
+    file.try_lock().inspect_err(|_| {
+        let _ = whole_file_lock(file, nix::libc::F_UNLCK);
+    })
 }
 #[cfg(target_os = "linux")]
 fn unlock(file: &fs::File) -> std::io::Result<()> {
-    Ok(whole_file_lock(file, nix::libc::F_UNLCK)?)
+    let ofd = whole_file_lock(file, nix::libc::F_UNLCK);
+    file.unlock()?;
+    Ok(ofd?)
 }
 #[cfg(not(target_os = "linux"))]
 fn try_lock(file: &fs::File) -> std::result::Result<(), fs::TryLockError> {
