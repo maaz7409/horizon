@@ -1315,8 +1315,23 @@ fn load_properties(path: &Path, bytes: &[u8]) -> Result<Properties, String> {
         .map_err(|(e, line)| format!("{}, line {line}: {e}", path.display()))
 }
 
-/// Sets one value in a TOML document, keeping the comment after the old value.
+/// Sets one value in a TOML document, keeping the comment after the old value. A [`ONCE_UNTYPED`] setting
+/// that `[world]` doesn't hold yet moves there: its `[properties]` key goes, or the document would set it
+/// twice. Set in both places already, both stay and [`Config::parse`] refuses the document.
 fn set(doc: &mut toml_edit::DocumentMut, section: &str, key: &str, value: &toml::Value) {
+    let in_section = doc
+        .get(section)
+        .and_then(toml_edit::Item::as_table_like)
+        .is_some_and(|t| t.contains_key(key));
+    if section == "world"
+        && !in_section
+        && let Some((_, untyped)) = ONCE_UNTYPED.iter().find(|(field, _)| *field == key)
+        && let Some(properties) = doc
+            .get_mut("properties")
+            .and_then(toml_edit::Item::as_table_like_mut)
+    {
+        properties.remove(untyped);
+    }
     let Some(table) = doc
         .entry(section)
         .or_insert_with(toml_edit::table)
@@ -1567,6 +1582,31 @@ level-type = "minecraft:amplified"
             err,
             "[properties] sets level-type: set world.level_type instead"
         );
+    }
+
+    /// `config set` (and the API, and `sync_back`) on a `server.toml` that sets the preset the old way, under
+    /// `[properties]`: the setting moves to `[world]` with the new value, instead of the file setting it twice.
+    #[test]
+    fn setting_a_preset_set_under_properties_moves_it_to_world() {
+        let dir = std::env::temp_dir().join(format!("horizon-server-moved-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(FILE),
+            "[properties]\nlevel-type = \"minecraft:flat\"\nspawn-protection = 0\n",
+        )
+        .unwrap();
+        let amplified = toml::Value::String("minecraft:amplified".into());
+        update(&dir, "world", "level_type", amplified).unwrap();
+        let text = std::fs::read_to_string(dir.join(FILE)).unwrap();
+        let config = Config::parse(&text).unwrap();
+        assert_eq!(config.world.level_type, "minecraft:amplified");
+        assert!(!text.contains("level-type"), "{text}");
+        assert_eq!(
+            config.properties.keys().collect::<Vec<_>>(),
+            ["spawn-protection"]
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
